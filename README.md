@@ -1,10 +1,9 @@
-CUDA Path Tracer
+CUDA Pathtracing and Raytracing Project
 ================
 
-**University of Pennsylvania, CIS 565: GPU Programming and Architecture, Project 3**
+**University of Houston, COSC 4397: Parallel Computations of GPU, Panruo Wu, Spring 2025, Final Project**
 
-* (TODO) YOUR NAME HERE
-* Tested on: (TODO) Windows 22, i7-2222 @ 2.22GHz 22GB, GTX 222 222MB (Moore 2222 Lab)
+* Group 3: Leo Nguyen and Sthiber Guevara
 
 ### (TODO: Your README)
 
