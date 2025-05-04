@@ -73,4 +73,5 @@ struct ShadeableIntersection {
   float t;
   glm::vec3 surfaceNormal;
   int materialId;
+  glm::vec3 point; // Group3 Mod - Added to store the intersection point
 };
