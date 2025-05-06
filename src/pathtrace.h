@@ -3,13 +3,10 @@
 #include <vector>
 #include "scene.h"
 
-typedef unsigned char uchar4[4];
-typedef uchar4* uchar4pbo;
-
 void InitDataContainer(GuiDataContainer* guiData);
-void pathtraceInit(Scene scene);
+void pathtraceInit(Scene *scene);
 void pathtraceFree();
-void pathtrace(uchar4pbo, int frame, int iteration);
+void pathtrace(uchar4 *pbo, int frame, int iteration);
 
 // Group3 Mod - Added timing variable declarations for performance measurement
 extern cudaEvent_t startPathTrace, stopPathTrace;

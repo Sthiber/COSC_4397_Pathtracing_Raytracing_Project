@@ -22,14 +22,15 @@
 #include "intersections.h"
 #include "interactions.h"
 
-// Group3 Mod - Configuration options
+// Group3 Mod - Configuration options 
 #define ERRORCHECK 1
-#define STREAM_COMPACTION 1    // Enable/disable stream compaction
-#define MATERIAL_SORTING 1     // Enable/disable material sorting
-#define USE_ENHANCED_BVH 1     // Use enhanced BVH with better heuristics
+#define STREAM_COMPACTION 1    // Enable/disable stream compaction for terminated rays
+#define MATERIAL_SORTING 1     // Enable/disable material sorting to reduce warp divergence
+#define USE_ENHANCED_BVH 1     // Use enhanced BVH with surface area heuristic
 #define MAX_SAH_BUCKETS 8      // Number of buckets for SAH split finding
 #define MAX_BVH_DEPTH 16       // Maximum depth of BVH tree
 #define MAX_BVH_PRIMS_PER_NODE 4 // Maximum primitives per leaf node
+#define MAX_ITERATIONS 10      // Stop rendering after 10 iterations
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -54,7 +55,7 @@ void checkCUDAErrorFn(const char* msg, const char* file, int line) {
 #endif
 }
 
-// Group3 Mod - Device-compatible swap function
+// Group3 Mod - Device-compatible swap function (fixes std::swap device compiler error)
 __device__ __host__ 
 inline void deviceSwap(int& a, int& b) {
     int temp = a;
@@ -62,8 +63,19 @@ inline void deviceSwap(int& a, int& b) {
     b = temp;
 }
 
-// Group3 Mod - Performance metrics tracking structure
+// Group3 Mod - Enhanced performance metrics tracking structure
+struct KernelTimingBreakdown {
+    float generateRayTime = 0.0f;
+    float intersectionTime = 0.0f;
+    float shadingTime = 0.0f;
+    float streamCompactionTime = 0.0f;
+    float finalGatherTime = 0.0f;
+    float materialSortingTime = 0.0f;
+    float miscTime = 0.0f;
+};
+
 struct PerformanceMetrics {
+    // Basic timing metrics
     float totalKernelTime = 0.0f;
     float memoryTransferToDeviceTime = 0.0f;
     float memoryTransferFromDeviceTime = 0.0f;
@@ -73,48 +85,118 @@ struct PerformanceMetrics {
     int kernelCalls = 0;
     bool metricsRecorded = false;
     
+    // Additional metrics from the picture
+    float totalRenderTime = 0.0f;        // 1. Total Render Time
+    float timePerIteration = 0.0f;       // 2. Time per Iteration
+    KernelTimingBreakdown kernelBreakdown; // 3. Kernel Timing Breakdown
+    float samplesPerSecond = 0.0f;       // 4. Samples per Second
+    size_t totalGpuMemoryUsed = 0;       // 5. Memory Usage
+    size_t sharedMemoryUsed = 0;         // Part of Memory Usage
+    float psnr = 0.0f;                   // 6. PSNR
+    int iterationsForCleanImage = 0;     // 7. Number of Iterations for Clean Image
+    
+    // Timer for calculating total render time
+    std::chrono::high_resolution_clock::time_point startTime;
+    
+    // Initialize metrics and start the timer
+    void startMeasurement() {
+        startTime = std::chrono::high_resolution_clock::now();
+    }
+    
+    // Calculate time per iteration
+    void updateIterationTime(float iterationTime) {
+        if (timePerIteration == 0.0f) {
+            timePerIteration = iterationTime;
+        } else {
+            timePerIteration = (timePerIteration + iterationTime) / 2.0f;  // Running average
+        }
+    }
+    
     // Group3 Mod - Print metrics once
-    void logMetrics(int iter, int frame) {
+    void logMetrics(int iter, int frame, int pixelCount) {
         if (metricsRecorded) {
             return; // Only log once
         }
+        
+        // Calculate total render time
+        auto endTime = std::chrono::high_resolution_clock::now();
+        float renderMilliseconds = std::chrono::duration<float, std::milli>(endTime - startTime).count();
+        totalRenderTime = renderMilliseconds / 1000.0f;  // Convert to seconds
+        
+        // Calculate samples per second (rays processed per second)
+        samplesPerSecond = (float)(pixelCount * iter) / totalRenderTime;
         
         // Calculate metrics
         float totalTime = totalKernelTime + memoryTransferToDeviceTime + memoryTransferFromDeviceTime;
         gpuUtilization = (totalTime > 0) ? totalKernelTime / totalTime * 100.0f : 0.0f;
         
         // Current timestamp and username from user
-        const char* timestamp = "2025-05-04 04:17:10";
-        const char* username = "leo2971998";
+        const char* timestamp = "2025-05-06 19:48:47";  // Updated timestamp
+        const char* username = "leo2971998";            // Username
         
         // Create log file if it doesn't exist
         std::ofstream logFile("cuda_performance.log", std::ios::app);
         if (logFile.is_open()) {
             logFile << "====== PERFORMANCE METRICS (Frame: " << frame << ", Iteration: " << iter << ") ======\n";
             logFile << "Timestamp: " << timestamp << "\n";
-            logFile << "User: " << username << "\n";
+            logFile << "User: " << username << "\n\n";
+            
+            // Basic metrics
+            logFile << "--- Basic GPU Metrics ---\n";
             logFile << "Total kernel execution time: " << totalKernelTime << " ms\n";
             logFile << "Memory transfer to device time: " << memoryTransferToDeviceTime << " ms\n";
             logFile << "Memory transfer from device time: " << memoryTransferFromDeviceTime << " ms\n";
             logFile << "Bytes transferred to device: " << bytesTransferredToDevice << " bytes\n";
             logFile << "Bytes transferred from device: " << bytesTransferredFromDevice << " bytes\n";
             logFile << "GPU utilization: " << gpuUtilization << " %\n";
-            logFile << "Number of kernel calls: " << kernelCalls << "\n";
+            logFile << "Number of kernel calls: " << kernelCalls << "\n\n";
+            
+            // Extended metrics
+            logFile << "--- Extended Rendering Metrics ---\n";
+            logFile << "1. Total render time: " << totalRenderTime << " seconds\n";
+            logFile << "2. Average time per iteration: " << timePerIteration << " ms\n";
+            
+            logFile << "3. Kernel timing breakdown:\n";
+            logFile << "   - Ray generation: " << kernelBreakdown.generateRayTime << " ms (" 
+                    << (kernelBreakdown.generateRayTime / totalKernelTime * 100.0f) << "%)\n";
+            logFile << "   - Intersection: " << kernelBreakdown.intersectionTime << " ms (" 
+                    << (kernelBreakdown.intersectionTime / totalKernelTime * 100.0f) << "%)\n";
+            logFile << "   - Shading: " << kernelBreakdown.shadingTime << " ms (" 
+                    << (kernelBreakdown.shadingTime / totalKernelTime * 100.0f) << "%)\n";
+            logFile << "   - Stream compaction: " << kernelBreakdown.streamCompactionTime << " ms (" 
+                    << (kernelBreakdown.streamCompactionTime / totalKernelTime * 100.0f) << "%)\n";
+            logFile << "   - Material sorting: " << kernelBreakdown.materialSortingTime << " ms (" 
+                    << (kernelBreakdown.materialSortingTime / totalKernelTime * 100.0f) << "%)\n";
+            logFile << "   - Final gather: " << kernelBreakdown.finalGatherTime << " ms (" 
+                    << (kernelBreakdown.finalGatherTime / totalKernelTime * 100.0f) << "%)\n";
+            
+            logFile << "4. Samples per second: " << samplesPerSecond << " rays/s\n";
+            logFile << "5. GPU memory usage: " << (float)totalGpuMemoryUsed / (1024.0f * 1024.0f) << " MB";
+            
+            if (sharedMemoryUsed > 0) {
+                logFile << " (shared memory: " << (float)sharedMemoryUsed / 1024.0f << " KB)\n";
+            } else {
+                logFile << "\n";
+            }
+            
+            logFile << "7. Max iterations: " << MAX_ITERATIONS << "\n";
             logFile << "=================================================\n\n";
             logFile.close();
         }
         
         // Also output to console
-        printf("====== PERFORMANCE METRICS (Frame: %d, Iteration: %d) ======\n", frame, iter);
-        printf("Total kernel execution time: %.2f ms\n", totalKernelTime);
-        printf("Memory transfer time: %.2f ms (to: %.2f ms, from: %.2f ms)\n", 
-               memoryTransferToDeviceTime + memoryTransferFromDeviceTime,
-               memoryTransferToDeviceTime, memoryTransferFromDeviceTime);
-        printf("GPU utilization: %.2f %%\n", gpuUtilization);
-        printf("Bytes transferred: %zu (to device: %zu, from device: %zu)\n", 
-               bytesTransferredToDevice + bytesTransferredFromDevice,
-               bytesTransferredToDevice, bytesTransferredFromDevice);
-        printf("=================================================\n");
+        printf("\n====== PERFORMANCE METRICS SUMMARY ======\n");
+        printf("1. Total render time: %.2f seconds\n", totalRenderTime);
+        printf("2. Average time per iteration: %.2f ms\n", timePerIteration);
+        printf("3. Kernel breakdown: Ray gen (%.1f%%), Intersect (%.1f%%), Shade (%.1f%%)\n",
+               kernelBreakdown.generateRayTime / totalKernelTime * 100.0f,
+               kernelBreakdown.intersectionTime / totalKernelTime * 100.0f,
+               kernelBreakdown.shadingTime / totalKernelTime * 100.0f);
+        printf("4. Samples per second: %.2f million rays/s\n", samplesPerSecond / 1000000.0f);
+        printf("5. GPU memory: %.2f MB\n", (float)totalGpuMemoryUsed / (1024.0f * 1024.0f));
+        printf("6. GPU utilization: %.1f%%\n", gpuUtilization);
+        printf("7. Total iterations: %d (max: %d)\n", iter, MAX_ITERATIONS);
+        printf("======================================\n\n");
         
         // Mark that metrics have been recorded
         metricsRecorded = true;
@@ -170,11 +252,21 @@ float timeMemcpyFromDevice(void* dst, const void* src, size_t count, cudaMemcpyK
     return milliseconds;
 }
 
+// Group3 Mod - Function to get GPU memory usage
+void updateGpuMemoryUsage() {
+    size_t free, total;
+    cudaMemGetInfo(&free, &total);
+    metrics.totalGpuMemoryUsed = total - free;
+}
+
+// Random number generator initialization
 __host__ __device__
 thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int depth) {
     int h = utilhash((1 << 31) | (depth << 22) | iter) ^ utilhash(index);
     return thrust::default_random_engine(h);
 }
+
+//---------- Group3 Mod - BEGIN BVH ACCELERATION STRUCTURES ----------//
 
 // Group3 Mod - AABB structure for BVH
 struct AABB {
@@ -212,7 +304,7 @@ struct AABB {
         return max[axis] - min[axis];
     }
     
-    // Test ray-AABB intersection (optimized version)
+    // Optimized ray-AABB intersection test
     __device__
     bool intersect(const Ray& ray, float& tMin, float& tMax) const {
         // Precompute inverse direction for efficiency
@@ -225,14 +317,14 @@ struct AABB {
         const glm::vec3 tsmaller = glm::min(t0, t1);
         const glm::vec3 tbigger = glm::max(t0, t1);
         
-        tMin = glm::max(tsmaller.x, glm::max(tsmaller.y, tsmaller.z));
-        tMax = glm::min(tbigger.x, glm::min(tbigger.y, tbigger.z));
+        tMin = glm::max(glm::max(tsmaller.x, tsmaller.y), tsmaller.z);
+        tMax = glm::min(glm::min(tbigger.x, tbigger.y), tbigger.z);
         
         return tMax >= tMin && tMax > 0;
     }
 };
 
-// Group3 Mod - Custom BVH node structure (renamed to avoid conflict)
+// Group3 Mod - Optimized BVH node structure (renamed to avoid conflict with existing BVHNode)
 struct OptimizedBVHNode {
     AABB bounds;
     int firstChild;    // Index of first child (second is firstChild+1)
@@ -245,17 +337,31 @@ struct OptimizedBVHNode {
     }
 };
 
-// Group3 Mod - Custom BVH structure (renamed to avoid conflict)
+// Group3 Mod - Optimized BVH structure (renamed to avoid conflict)
 struct OptimizedBVH {
     OptimizedBVHNode* nodes;   // Array of BVH nodes
-    int* primIndices;         // Reordered primitive indices
-    int nodeCount;            // Total number of nodes
-    int rootIndex;            // Index of the root node
+    int* primIndices;          // Reordered primitive indices
+    int nodeCount;             // Total number of nodes
+    int rootIndex;             // Index of the root node
 };
 
-// Static custom BVH data
+// Static BVH data
 static OptimizedBVH* dev_bvh = nullptr;
 static OptimizedBVH* host_bvh = nullptr;
+
+// Group3 Mod - Helper struct for BVH construction
+struct PrimitiveBounds {
+    AABB bounds;
+    int index;
+};
+
+// Group3 Mod - SAH Bucket for BVH construction
+struct SAHBucket {
+    AABB bounds;
+    int count = 0;
+};
+
+//---------- Group3 Mod - END BVH ACCELERATION STRUCTURES ----------//
 
 // Group3 Mod - Kernel that writes the image to the OpenGL PBO directly
 __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution,
@@ -283,18 +389,6 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution,
     }
 }
 
-// Group3 Mod - Helper struct for BVH construction
-struct PrimitiveBounds {
-    AABB bounds;
-    int index;
-};
-
-// Group3 Mod - SAH Bucket for BVH construction
-struct SAHBucket {
-    AABB bounds;
-    int count = 0;
-};
-
 // Scene data
 static Scene* hst_scene = NULL;
 static GuiDataContainer* guiData = NULL;
@@ -306,7 +400,7 @@ static Material* dev_materials = NULL;
 static PathSegment* dev_paths = NULL;
 static ShadeableIntersection* dev_intersections = NULL;
 
-// Group3 Mod - Added for stream compaction and sorting
+//---------- Group3 Mod - BEGIN STREAM COMPACTION DATA ----------//
 static int* dev_path_flags = NULL;
 static PathSegment* dev_paths_compact = NULL;
 static int* dev_path_indices = NULL;
@@ -315,11 +409,13 @@ static thrust::device_ptr<PathSegment> dev_paths_thrust;
 static thrust::device_ptr<PathSegment> dev_paths_compact_thrust;
 static thrust::device_ptr<int> dev_path_flags_thrust;
 static thrust::device_ptr<int> dev_path_indices_thrust;
+//---------- Group3 Mod - END STREAM COMPACTION DATA ----------//
 
-// Group3 Mod - Added for material sorting
+//---------- Group3 Mod - BEGIN MATERIAL SORTING DATA ----------//
 static int* dev_material_ids = NULL;
 static thrust::device_ptr<int> dev_material_ids_thrust;
 static thrust::device_ptr<ShadeableIntersection> dev_intersections_thrust;
+//---------- Group3 Mod - END MATERIAL SORTING DATA ----------//
 
 // Constants for path tracing
 #define MAX_BVH_NODES (1 << MAX_BVH_DEPTH)
@@ -327,6 +423,8 @@ static thrust::device_ptr<ShadeableIntersection> dev_intersections_thrust;
 void InitDataContainer(GuiDataContainer* imGuiData) {
     guiData = imGuiData;
 }
+
+//---------- Group3 Mod - BEGIN SAH-BASED BVH CONSTRUCTION ----------//
 
 // Group3 Mod - SAH-based BVH construction helper function
 float evaluateSAH(const AABB& parentBounds, const AABB& leftBounds, const AABB& rightBounds, 
@@ -504,7 +602,7 @@ int buildBVHRecursive(OptimizedBVH* bvh, std::vector<PrimitiveBounds>& primBound
     return currentNodeIdx;
 }
 
-// Group3 Mod - Build the BVH acceleration structure
+// Group3 Mod - Main function to build the BVH acceleration structure
 void buildOptimizedBVH(Scene* scene) {
     int numPrims = scene->geoms.size();
     if (numPrims == 0) return;
@@ -566,7 +664,7 @@ void buildOptimizedBVH(Scene* scene) {
     cudaMemcpy(dev_bvh, &deviceBVH, sizeof(OptimizedBVH), cudaMemcpyHostToDevice);
 }
 
-// Group3 Mod - Free BVH resources
+// Group3 Mod - Clean up BVH resources
 void cleanupBVH() {
     if (host_bvh) {
         // Get device pointers from GPU
@@ -585,10 +683,19 @@ void cleanupBVH() {
         
         host_bvh = nullptr;
         dev_bvh = nullptr;
+        
+        printf("BVH resources cleaned up\n");
     }
 }
 
+//---------- Group3 Mod - END SAH-BASED BVH CONSTRUCTION ----------//
+
+//---------- Group3 Mod - BEGIN INITIALIZATION & CLEANUP ----------//
+
 void pathtraceInit(Scene* scene) {
+    // Start timing the rendering process
+    metrics.startMeasurement();
+    
     hst_scene = scene;
 
     const Camera& cam = hst_scene->state.camera;
@@ -632,10 +739,13 @@ void pathtraceInit(Scene* scene) {
     dev_intersections_thrust = thrust::device_pointer_cast(dev_intersections);
     cudaMemset(dev_intersections, 0, pixelcount * sizeof(ShadeableIntersection));
 
-    // Build acceleration structure if we have enough primitives
+    // Group3 Mod - Build acceleration structure if we have enough primitives
     if (scene->geoms.size() > 1) {
         buildOptimizedBVH(scene);
     }
+
+    // Track GPU memory usage
+    updateGpuMemoryUsage();
 
     checkCUDAError("pathtraceInit");
 }
@@ -648,16 +758,22 @@ void pathtraceFree() {
     cudaFree(dev_materials);
     cudaFree(dev_intersections);
     
-    // Free memory for stream compaction and sorting
+    // Group3 Mod - Free memory for stream compaction
     cudaFree(dev_paths_compact);
     cudaFree(dev_path_flags);
     cudaFree(dev_path_indices);
     cudaFree(dev_path_count);
+    
+    // Group3 Mod - Free memory for material sorting
     cudaFree(dev_material_ids);
     
-    // Free acceleration structures
+    // Group3 Mod - Free acceleration structures
     cleanupBVH();
 }
+
+//---------- Group3 Mod - END INITIALIZATION & CLEANUP ----------//
+
+//---------- Group3 Mod - BEGIN PATH GENERATION WITH ANTIALIASING ----------//
 
 /**
 * Generate PathSegments with rays from the camera through the screen into the
@@ -674,11 +790,11 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         int index = x + (y * cam.resolution.x);
         PathSegment& segment = pathSegments[index];
         
-        // Initialize RNG for jittering
+        // Group3 Mod - Initialize RNG for jittering
         thrust::default_random_engine rng = makeSeededRandomEngine(iter, index, 0);
         thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
         
-        // Apply jitter for antialiasing (more controlled amount)
+        // Group3 Mod - Apply jitter for antialiasing (more controlled amount)
         float jitterX = (u01(rng) - 0.5f) * 0.7f;
         float jitterY = (u01(rng) - 0.5f) * 0.7f;
 
@@ -697,6 +813,10 @@ __global__ void generateRayFromCamera(Camera cam, int iter, int traceDepth, Path
         segment.color = glm::vec3(1.0f, 1.0f, 1.0f);
     }
 }
+
+//---------- Group3 Mod - END PATH GENERATION WITH ANTIALIASING ----------//
+
+//---------- Group3 Mod - BEGIN BVH TRAVERSAL ----------//
 
 // Group3 Mod - High-performance BVH traversal
 __device__ bool traverseBVH(
@@ -719,7 +839,7 @@ __device__ bool traverseBVH(
     bool hit = false;
     t_min = FLT_MAX;
     
-    // Precompute ray inverse direction and sign for faster AABB tests
+    // Group3 Mod - Precompute ray inverse direction and sign for faster AABB tests
     const glm::vec3 invDir = 1.0f / ray.direction;
     const bool dirIsNeg[3] = {invDir.x < 0.0f, invDir.y < 0.0f, invDir.z < 0.0f};
     
@@ -767,14 +887,14 @@ __device__ bool traverseBVH(
             int firstChild = node.firstChild;
             int secondChild = node.firstChild + 1;
             
-            // Visit the closer child first to terminate earlier
+            // Group3 Mod - Visit the closer child first to terminate earlier
             int axis = 0;
             float maxComponent = fabsf(invDir.x);
             if (fabsf(invDir.y) > maxComponent) { axis = 1; maxComponent = fabsf(invDir.y); }
             if (fabsf(invDir.z) > maxComponent) { axis = 2; }
             
             if (dirIsNeg[axis]) {
-                // Swap traversal order
+                // Group3 Mod - Swap traversal order using device-safe swap
                 deviceSwap(firstChild, secondChild);
             }
             
@@ -786,6 +906,10 @@ __device__ bool traverseBVH(
     
     return hit;
 }
+
+//---------- Group3 Mod - END BVH TRAVERSAL ----------//
+
+//---------- Group3 Mod - BEGIN INTERSECTION KERNELS ----------//
 
 // Group3 Mod - Optimized ray-scene intersection using BVH
 __global__ void computeIntersectionsBVH(
@@ -832,12 +956,12 @@ __global__ void computeIntersectionsBVH(
 
 // Legacy intersection test without BVH
 __global__ void computeIntersections(
-    int depth
-    , int num_paths
-    , PathSegment* pathSegments
-    , Geom* geoms
-    , int geoms_size
-    , ShadeableIntersection* intersections
+    int depth,
+    int num_paths,
+    PathSegment* pathSegments,
+    Geom* geoms,
+    int geoms_size,
+    ShadeableIntersection* intersections
 )
 {
     int path_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -900,6 +1024,10 @@ __global__ void computeIntersections(
     }
 }
 
+//---------- Group3 Mod - END INTERSECTION KERNELS ----------//
+
+//---------- Group3 Mod - BEGIN MATERIAL SORTING ----------//
+
 // Group3 Mod - Material ID marking kernel for sorting
 __global__ void markMaterialIDs(
     int num_paths,
@@ -915,6 +1043,10 @@ __global__ void markMaterialIDs(
         }
     }
 }
+
+//---------- Group3 Mod - END MATERIAL SORTING ----------//
+
+//---------- Group3 Mod - BEGIN SHADING WITH SHARED MEMORY ----------//
 
 // Group3 Mod - Optimized shader with shared memory for material caching
 __global__ void shadeFakeMaterial(
@@ -1003,6 +1135,10 @@ __global__ void shadeFakeMaterial(
     }
 }
 
+//---------- Group3 Mod - END SHADING WITH SHARED MEMORY ----------//
+
+//---------- Group3 Mod - BEGIN STREAM COMPACTION ----------//
+
 // Group3 Mod - Kernel to perform stream compaction with efficient operations
 __global__ void compactPaths(
     PathSegment* pathsIn,
@@ -1023,6 +1159,8 @@ __global__ void compactPaths(
     }
 }
 
+//---------- Group3 Mod - END STREAM COMPACTION ----------//
+
 // Add the current iteration's output to the overall image
 __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths)
 {
@@ -1038,6 +1176,8 @@ __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iteration
         }
     }
 }
+
+//---------- Group3 Mod - BEGIN PERFORMANCE MONITORING ----------//
 
 // Group3 Mod - Helper function to time kernel execution (standard version)
 template<typename Func, typename... Args>
@@ -1088,15 +1228,26 @@ float timeShaderWithSharedMemory(dim3 blocks, dim3 threads, int sharedMemBytes,
     
     metrics.totalKernelTime += milliseconds;
     metrics.kernelCalls++;
+    metrics.sharedMemoryUsed = sharedMemBytes;
+    metrics.kernelBreakdown.shadingTime += milliseconds;
     
     return milliseconds;
 }
+
+//---------- Group3 Mod - END PERFORMANCE MONITORING ----------//
 
 /**
  * Wrapper for the __global__ call that sets up the kernel calls and does a ton
  * of memory management
  */
 void pathtrace(uchar4* pbo, int frame, int iter) {
+    // Group3 Mod - Check if we've reached the max iterations and end rendering
+    if (iter > MAX_ITERATIONS) {
+        // Print final metrics and return
+        metrics.logMetrics(MAX_ITERATIONS, frame, hst_scene->state.camera.resolution.x * hst_scene->state.camera.resolution.y);
+        return;
+    }
+    
     const int traceDepth = hst_scene->state.traceDepth;
     const Camera& cam = hst_scene->state.camera;
     const int pixelcount = cam.resolution.x * cam.resolution.y;
@@ -1110,10 +1261,17 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
     // 1D block for path tracing
     const int blockSize1d = 128;
 
+    // Timer for this iteration
+    cudaEvent_t startIter, stopIter;
+    cudaEventCreate(&startIter);
+    cudaEventCreate(&stopIter);
+    cudaEventRecord(startIter);
+
     ///////////////////////////////////////////////////////////////////////////
 
     // Group3 Mod - Time the generateRayFromCamera kernel
-    timeKernelExecution(generateRayFromCamera, blocksPerGrid2d, blockSize2d, cam, iter, traceDepth, dev_paths);
+    float rayGenTime = timeKernelExecution(generateRayFromCamera, blocksPerGrid2d, blockSize2d, cam, iter, traceDepth, dev_paths);
+    metrics.kernelBreakdown.generateRayTime += rayGenTime;
     checkCUDAError("generate camera ray");
 
     int depth = 0;
@@ -1130,10 +1288,12 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
         // tracing
         dim3 numblocksPathSegmentTracing = (num_paths + blockSize1d - 1) / blockSize1d;
         
+        float intersectionTime = 0.0f;
+        
         // Group3 Mod - Use BVH acceleration if available
         if (dev_bvh != nullptr) {
             // Group3 Mod - Time the BVH-accelerated intersection kernel
-            timeKernelExecution(computeIntersectionsBVH, numblocksPathSegmentTracing, blockSize1d,
+            intersectionTime = timeKernelExecution(computeIntersectionsBVH, numblocksPathSegmentTracing, blockSize1d,
                 depth,
                 num_paths,
                 dev_paths,
@@ -1144,7 +1304,7 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
             );
         } else {
             // Group3 Mod - Time the regular intersection kernel
-            timeKernelExecution(computeIntersections, numblocksPathSegmentTracing, blockSize1d,
+            intersectionTime = timeKernelExecution(computeIntersections, numblocksPathSegmentTracing, blockSize1d,
                 depth,
                 num_paths,
                 dev_paths,
@@ -1154,14 +1314,17 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
             );
         }
         
+        metrics.kernelBreakdown.intersectionTime += intersectionTime;
         checkCUDAError("trace one bounce");
         
         // Group3 Mod - Material sorting
         #if MATERIAL_SORTING
         if (num_paths > 1) {
             // Mark material IDs for sorting
-            timeKernelExecution(markMaterialIDs, numblocksPathSegmentTracing, blockSize1d,
+            float materialSortTime = timeKernelExecution(markMaterialIDs, numblocksPathSegmentTracing, blockSize1d,
                               num_paths, dev_intersections, dev_material_ids);
+            
+            metrics.kernelBreakdown.materialSortingTime += materialSortTime;
             
             // Create a temporary copy for intersection sorting
             int* temp_material_ids = nullptr;
@@ -1207,8 +1370,10 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
         thrust::exclusive_scan(dev_path_flags_thrust, dev_path_flags_thrust + num_paths, dev_path_indices_thrust);
         
         // Compact paths
-        timeKernelExecution(compactPaths, numblocksPathSegmentTracing, blockSize1d,
+        float compactionTime = timeKernelExecution(compactPaths, numblocksPathSegmentTracing, blockSize1d,
             dev_paths, dev_paths_compact, dev_path_flags, dev_path_indices, num_paths, dev_path_count);
+        
+        metrics.kernelBreakdown.streamCompactionTime += compactionTime;
         
         // Use direct pointer swap instead of std::swap (which is host-only)
         PathSegment* temp = dev_paths;
@@ -1242,20 +1407,45 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
     dim3 numBlocksPixels = (pixelcount + blockSize1d - 1) / blockSize1d;
     
     // Group3 Mod - Time the finalGather kernel
-    timeKernelExecution(finalGather, numBlocksPixels, blockSize1d, pixelcount, dev_image, dev_paths);
+    float gatherTime = timeKernelExecution(finalGather, numBlocksPixels, blockSize1d, pixelcount, dev_image, dev_paths);
+    metrics.kernelBreakdown.finalGatherTime += gatherTime;
 
     ///////////////////////////////////////////////////////////////////////////
 
     // Send results to OpenGL buffer for rendering
     // Group3 Mod - Time the sendImageToPBO kernel
-    timeKernelExecution(sendImageToPBO, blocksPerGrid2d, blockSize2d, pbo, cam.resolution, iter, dev_image);
+    float sendTime = timeKernelExecution(sendImageToPBO, blocksPerGrid2d, blockSize2d, pbo, cam.resolution, iter, dev_image);
+    metrics.kernelBreakdown.miscTime += sendTime;
 
     // Group3 Mod - Retrieve image from GPU and time the transfer
     timeMemcpyFromDevice(hst_scene->state.image.data(), dev_image,
         pixelcount * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+        
+    // Stop timer for this iteration
+    cudaEventRecord(stopIter);
+    cudaEventSynchronize(stopIter);
+    
+    float iterationTime = 0.0f;
+    cudaEventElapsedTime(&iterationTime, startIter, stopIter);
+    
+    metrics.updateIterationTime(iterationTime);
+    
+    cudaEventDestroy(startIter);
+    cudaEventDestroy(stopIter);
+    
+    // Update memory usage metrics
+    updateGpuMemoryUsage();
 
-    // Group3 Mod - Log the performance metrics once
-    metrics.logMetrics(iter, frame);
+    // Group3 Mod - Log the performance metrics when we reach MAX_ITERATIONS
+    if (iter == MAX_ITERATIONS) {
+        metrics.logMetrics(iter, frame, pixelcount);
+        
+        // Print a message that we've reached the iteration limit
+        printf("\n====== RENDERING COMPLETE ======\n");
+        printf("Reached maximum iterations (%d)\n", MAX_ITERATIONS);
+        printf("Total render time: %.2f seconds\n", metrics.totalRenderTime);
+        printf("================================\n\n");
+    }
 
     checkCUDAError("pathtrace");
 }

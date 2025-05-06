@@ -1,16 +1,22 @@
-// Emissive material (light)
+// ----------------------------------------------------------------
+// Improved Cornell Box + Blue Cube
+// Default primitives only; no external meshes
+// ----------------------------------------------------------------
+
+// ————— Materials —————
+// 0: White Area Light
 MATERIAL 0
-RGB         1 1 1
+RGB         1.0 1.0 1.0
 SPECEX      0
 SPECRGB     0 0 0
 REFL        0
 REFR        0
 REFRIOR     0
-EMITTANCE   5
+EMITTANCE   15.0
 
-// Diffuse white
+// 1: Diffuse White
 MATERIAL 1
-RGB         .98 .98 .98
+RGB         0.8 0.8 0.8
 SPECEX      0
 SPECRGB     0 0 0
 REFL        0
@@ -18,9 +24,9 @@ REFR        0
 REFRIOR     0
 EMITTANCE   0
 
-// Diffuse red
+// 2: Diffuse Red (Left Wall)
 MATERIAL 2
-RGB         .85 .35 .35
+RGB         0.75 0.15 0.15
 SPECEX      0
 SPECRGB     0 0 0
 REFL        0
@@ -28,9 +34,9 @@ REFR        0
 REFRIOR     0
 EMITTANCE   0
 
-// Diffuse green
+// 3: Diffuse Green (Right Wall)
 MATERIAL 3
-RGB         .35 .85 .35
+RGB         0.15 0.75 0.15
 SPECEX      0
 SPECRGB     0 0 0
 REFL        0
@@ -38,80 +44,144 @@ REFR        0
 REFRIOR     0
 EMITTANCE   0
 
-// Specular white
+// 4: Mirror (Specular)
 MATERIAL 4
-RGB         .98 .98 .98
+RGB         0.98 0.98 0.98
 SPECEX      0
-SPECRGB     .98 .98 .98
-REFL        1
+SPECRGB     0.98 0.98 0.98
+REFL        1.0
 REFR        0
 REFRIOR     0
 EMITTANCE   0
 
-// Camera
+// 5: Glass (Refractive)
+MATERIAL 5
+RGB         0.98 0.98 0.98
+SPECEX      0
+SPECRGB     0.98 0.98 0.98
+REFL        0
+REFR        1.0
+REFRIOR     1.5
+EMITTANCE   0
+
+// 6: Diffuse Gray (Floor/Ceiling/Back Wall)
+MATERIAL 6
+RGB         0.7 0.7 0.7
+SPECEX      0
+SPECRGB     0 0 0
+REFL        0
+REFR        0
+REFRIOR     0
+EMITTANCE   0
+
+// 7: Diffuse Blue (Added Cube)
+MATERIAL 7
+RGB         0.2 0.3 0.8
+SPECEX      0
+SPECRGB     0 0 0
+REFL        0
+REFR        0
+REFRIOR     0
+EMITTANCE   0
+
+// ————— Camera —————
 CAMERA
 RES         800 800
 FOVY        45
-ITERATIONS  5000
+ITERATIONS  2000
 DEPTH       8
-FILE        cornell
-EYE         0.0 5 10.5
-LOOKAT      0 5 0
-UP          0 1 0
+FILE        improved_cornell_plus
+EYE         0 1  8
+LOOKAT      0 1  0
+UP          0 1  0
 
-
-// Ceiling light
+// ———– Lights ———–
+// Two small area lights in the ceiling
 OBJECT 0
 cube
 material 0
-TRANS       0 10 0
+TRANS       -1.5 9.9 1.5
 ROTAT       0 0 0
-SCALE       3 .3 3
+SCALE       1.0 0.02 1.0
 
-// Floor
 OBJECT 1
 cube
-material 1
-TRANS       0 0 0
-ROTAT       0 0 0
-SCALE       10 .01 10
+material 0
+TRANS        1.5 9.9 1.5
+ROTAT        0 0 0
+SCALE        1.0 0.02 1.0
 
-// Ceiling
+// ———– Cornell Box Walls ———–
+// Floor
 OBJECT 2
 cube
-material 1
-TRANS       0 10 0
-ROTAT       0 0 90
-SCALE       .01 10 10
+material 6
+TRANS       0 0 0
+ROTAT       0 0 0
+SCALE       10 0.02 10
 
-// Back wall
+// Ceiling
 OBJECT 3
 cube
-material 1
-TRANS       0 5 -5
-ROTAT       0 90 0
-SCALE       .01 10 10
+material 6
+TRANS       0 10 0
+ROTAT       0 0 0
+SCALE       10 0.02 10
 
-// Left wall
+// Back Wall
 OBJECT 4
 cube
-material 2
-TRANS       -5 5 0
+material 6
+TRANS       0 5 -10
 ROTAT       0 0 0
-SCALE       .01 10 10
+SCALE       10 10 0.02
 
-// Right wall
+// Left Wall (Red)
 OBJECT 5
 cube
-material 3
-TRANS       5 5 0
-ROTAT       0 0 0
-SCALE       .01 10 10
+material 2
+TRANS       -10 5 0
+ROTAT       0 0 90
+SCALE       10 10 0.02
 
-// Sphere
+// Right Wall (Green)
 OBJECT 6
+cube
+material 3
+TRANS       10 5 0
+ROTAT       0 0 90
+SCALE       10 10 0.02
+
+// Front Wall (White)
+OBJECT 7
+cube
+material 1
+TRANS       0 5 10
+ROTAT       0 180 0
+SCALE       10 10 0.02
+
+// ———– Center Spheres ———–
+// Mirror Sphere
+OBJECT 8
 sphere
 material 4
-TRANS       -1 4 -1
+TRANS       -2 2 0
 ROTAT       0 0 0
-SCALE       3 3 3
+SCALE       2 2 2
+
+// Glass Sphere
+OBJECT 9
+sphere
+material 5
+TRANS        2 2 0
+ROTAT        0 0 0
+SCALE        2 2 2
+
+// ———– Added Blue Cube ———–
+// Tilted cube in front to cast complex shadows
+OBJECT 10
+cube
+material 7
+TRANS       0 2  3
+ROTAT       30 45  0
+SCALE       2 2 2
