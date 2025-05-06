@@ -357,9 +357,10 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
 
         // Shading
         cudaEventRecord(startKernel);
-        shadeFakeMaterial<<<numblocksPathSegmentTracing, blockSize1d>>>(
-            iter, num_paths, dev_intersections, dev_paths, dev_materials
-        );
+        int materialCount = static_cast<int>(hst_scene->materials.size());
+        size_t sharedMemBytes = materialCount * sizeof(Material);
+        shadeFakeMaterial<<<numblocksPathSegmentTracing, blockSize1d, sharedMemBytes>>>(
+            iter, num_paths, dev_intersections, dev_paths, dev_materials);
         cudaEventRecord(stopKernel);
         cudaEventSynchronize(stopKernel);
         cudaEventElapsedTime(&shadeTime, startKernel, stopKernel);
