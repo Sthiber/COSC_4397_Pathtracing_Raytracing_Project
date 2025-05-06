@@ -259,16 +259,18 @@ __global__ void shadeFakeMaterial(
     int num_paths,
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
-    Material* materials)
+    Material* materials,
+    int materialCount)
 {
     extern __shared__ Material sharedMaterials[]; // Shared memory block
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     // Thread 0 of each block loads materials into shared memory
-    if (threadIdx.x < 32 && threadIdx.x < MAX_MATERIALS) { // Cap at 32 for safety
-        sharedMaterials[threadIdx.x] = materials[threadIdx.x];
+    for (int i = threadIdx.x; i < MAX_MATERIALS && i < materialCount; i += blockDim.x) {
+        sharedMaterials[i] = materials[i];
     }
+    
     __syncthreads(); // Ensure all threads wait until materials are loaded
 
     if (idx < num_paths) {
@@ -360,7 +362,7 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
         int materialCount = static_cast<int>(hst_scene->materials.size());
         size_t sharedMemBytes = materialCount * sizeof(Material);
         shadeFakeMaterial<<<numblocksPathSegmentTracing, blockSize1d, sharedMemBytes>>>(
-            iter, num_paths, dev_intersections, dev_paths, dev_materials);
+            iter, num_paths, dev_intersections, dev_paths, dev_materials, materialCount);
         cudaEventRecord(stopKernel);
         cudaEventSynchronize(stopKernel);
         cudaEventElapsedTime(&shadeTime, startKernel, stopKernel);
