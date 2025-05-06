@@ -21,5 +21,11 @@ CUDA Pathtracing and Raytracing Project
 | **Final gather time** | Time used to accumulate color results into the image buffer. | Helps confirm that pixel accumulation is efficient. |
 
 
+## Naive Approach
+The baseline for our project is the original implementation from the repository we forked. This represents the unoptimized, naive version of the path tracer. After running the Cornell Box scene using this baseline, we obtained the following performance metrics:
+
+
+
+
 
 
