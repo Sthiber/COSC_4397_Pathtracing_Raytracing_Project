@@ -23,6 +23,8 @@ cudaEvent_t startKernel, stopKernel;
 float totalKernelTime = 0.0f;
 
 #define ERRORCHECK 1
+#define MAX_MATERIALS 64
+
 
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
@@ -257,31 +259,43 @@ __global__ void shadeFakeMaterial(
     int num_paths,
     ShadeableIntersection* shadeableIntersections,
     PathSegment* pathSegments,
-    Material* materials
-) {
+    Material* materials)
+{
+    extern __shared__ Material sharedMaterials[]; // Shared memory block
+
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Thread 0 of each block loads materials into shared memory
+    if (threadIdx.x < 32 && threadIdx.x < MAX_MATERIALS) { // Cap at 32 for safety
+        sharedMaterials[threadIdx.x] = materials[threadIdx.x];
+    }
+    __syncthreads(); // Ensure all threads wait until materials are loaded
+
     if (idx < num_paths) {
-        ShadeableIntersection intersection = shadeableIntersections[idx];
+        const ShadeableIntersection intersection = shadeableIntersections[idx];
+        PathSegment& segment = pathSegments[idx];
+
         if (intersection.t > 0.0f) {
             thrust::default_random_engine rng = makeSeededRandomEngine(iter, idx, 0);
             thrust::uniform_real_distribution<float> u01(0, 1);
 
-            Material material = materials[intersection.materialId];
+            Material material = sharedMaterials[intersection.materialId];
             glm::vec3 materialColor = material.color;
 
             if (material.emittance > 0.0f) {
-                pathSegments[idx].color *= (materialColor * material.emittance);
+                segment.color *= materialColor * material.emittance;
             } else {
                 float lightTerm = glm::dot(intersection.surfaceNormal, glm::vec3(0.0f, 1.0f, 0.0f));
-                pathSegments[idx].color *= (materialColor * lightTerm) * 0.3f 
-                                         + ((1.0f - intersection.t * 0.02f) * materialColor) * 0.7f;
-                pathSegments[idx].color *= u01(rng);
+                segment.color *= (materialColor * lightTerm) * 0.3f 
+                               + ((1.0f - intersection.t * 0.02f) * materialColor) * 0.7f;
+                segment.color *= u01(rng);
             }
         } else {
-            pathSegments[idx].color = glm::vec3(0.0f);
+            segment.color = glm::vec3(0.0f);
         }
     }
 }
+
 
 __global__ void finalGather(int nPaths, glm::vec3* image, PathSegment* iterationPaths) {
     int index = (blockIdx.x * blockDim.x) + threadIdx.x;
