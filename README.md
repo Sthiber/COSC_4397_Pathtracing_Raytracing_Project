@@ -71,9 +71,19 @@ Most of the previous images were low quality, but we were able to produce this i
   <img src="img/ball.png" width="48%" />
 </p>
 
+## Contributions
+Sthiber: Set up the metric measure for the project, shared memory + coalaced memory optimization, the combined (our best optimized approach), and kept up with the documentation. 
+
+Leo: Implemented BVH, environment lighting, russian roullete, kept up with documentation, and material sort.
+
+## Use of AI in the Project
+We used AI to get a deeper understanding on how the entire project worked. We were given thousands of lines and some of the parts we did not understand, but through the use of AI we were able to speed up our process and get a deeper knowledge on how to approach this project. We also used AI to try and see possible methods on how to optimize the naive approach. Since we were new to path tracing and ray tracing we had no idea about BVH or those types of methods, but AI was able to help us understand and learn more about it. 
 
 ## Conclusion
 Through this final project, we applied and reinforced many of the CUDA optimization techniques we learned throughout the semester. By systematically experimenting with shared memory, memory coalescing, and BVH acceleration, we achieved significant improvements in both rendering speed and throughput while maintaining high image quality. We also learned the importance of understanding how different optimizations interact, such as discovering that material sorting can conflict with BVH traversal and introduce performance bottlenecks or visual artifacts. This project gave us hands-on experience in performance tuning, memory management, and GPU programming, and it allowed us to combine our knowledge from previous assignments into a cohesive and optimized path tracer.
+
+
+
 
 
 
