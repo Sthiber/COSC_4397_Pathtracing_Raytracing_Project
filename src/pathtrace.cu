@@ -1,4 +1,3 @@
-// PathTracerWithBVH.cu
 #include <cstdio>
 #include <cuda.h>
 #include <cmath>
@@ -207,6 +206,47 @@ thrust::default_random_engine makeSeededRandomEngine(int iter, int index, int de
     return thrust::default_random_engine(h);
 }
 
+// Group3 Mod - Helper functions for improved lighting and reflections
+__device__ glm::vec3 sampleHemisphere(float u1, float u2) {
+    float r = sqrt(1.0f - u1 * u1);
+    float phi = 2.0f * M_PI * u2;
+    return glm::vec3(r * cos(phi), u1, r * sin(phi));
+}
+
+__device__ void createLocalCoordinateSystem(const glm::vec3& normal, glm::vec3& tangent, glm::vec3& bitangent) {
+    if (fabs(normal.x) > fabs(normal.y)) {
+        tangent = glm::normalize(glm::vec3(normal.z, 0, -normal.x));
+    } else {
+        tangent = glm::normalize(glm::vec3(0, -normal.z, normal.y));
+    }
+    bitangent = glm::cross(normal, tangent);
+}
+
+__device__ glm::vec3 sampleCosineWeightedHemisphere(float u1, float u2, const glm::vec3& normal) {
+    glm::vec3 tangent, bitangent;
+    createLocalCoordinateSystem(normal, tangent, bitangent);
+    
+    // Cosine-weighted hemisphere sampling
+    float theta = acos(sqrt(1.0f - u1));
+    float phi = 2.0f * M_PI * u2;
+    
+    float x = sin(theta) * cos(phi);
+    float y = cos(theta);
+    float z = sin(theta) * sin(phi);
+    
+    return glm::normalize(tangent * x + normal * y + bitangent * z);
+}
+
+__device__ glm::vec3 reflect(const glm::vec3& incident, const glm::vec3& normal) {
+    return incident - 2.0f * glm::dot(incident, normal) * normal;
+}
+
+__device__ float schlickFresnel(float cosTheta, float n1, float n2) {
+    float r0 = (n1 - n2) / (n1 + n2);
+    r0 *= r0;
+    return r0 + (1.0f - r0) * pow(1.0f - cosTheta, 5.0f);
+}
+
 __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution,
                                int iter, glm::vec3* image)
 {
@@ -275,6 +315,7 @@ __global__ void computeIntersections(
                 t_min = t; hitG = g;
                 intersections[idx].point         = pt;
                 intersections[idx].surfaceNormal = nrm;
+                intersections[idx].outsideObject = out;  // Group3 Mod - Track whether ray hit from outside
             }
         } else {
             stack[sp++] = node.left;
@@ -287,14 +328,17 @@ __global__ void computeIntersections(
     } else {
         intersections[idx].t          = t_min;
         intersections[idx].materialId = geoms[hitG].materialid;
+        intersections[idx].geomIndex  = hitG;  // Group3 Mod - Store geometry index
     }
 }
 
-__global__ void shadeFakeMaterial(
-    int iter, int num_paths,
-    ShadeableIntersection* si,
-    PathSegment* paths,
-    Material* materials, int materialCount)
+// Group3 Mod - Improved physically-based shading kernel
+__global__ void shadeAndExtendRays(
+    int iter, int depth, int num_paths,
+    ShadeableIntersection* shadeableIntersections,
+    PathSegment* pathSegments,
+    Material* materials, int materialCount,
+    glm::vec3* lightPositions, int numLights)
 {
     extern __shared__ Material sharedMat[];
     int idx = blockIdx.x*blockDim.x + threadIdx.x;
@@ -305,23 +349,90 @@ __global__ void shadeFakeMaterial(
         sharedMat[i] = materials[i];
     __syncthreads();
 
-    const ShadeableIntersection hit = si[idx];
-    PathSegment &seg = paths[idx];
-
-    if (hit.t > 0.0f) {
-        auto rng = makeSeededRandomEngine(iter, idx, 0);
-        thrust::uniform_real_distribution<float> u01(0,1);
-        Material m = sharedMat[hit.materialId];
-
-        if (m.emittance > 0.0f) {
-            seg.color *= m.color * m.emittance;
-        } else {
-            float L = glm::dot(hit.surfaceNormal, glm::vec3(0,1,0));
-            seg.color *= (m.color * L)*0.3f + ((1.0f - hit.t*0.02f)*m.color)*0.7f;
-            seg.color *= u01(rng);
+    const ShadeableIntersection hit = shadeableIntersections[idx];
+    PathSegment &segment = pathSegments[idx];
+    
+    // For missed rays or depleted bounce count
+    if (hit.t < 0.0f || segment.remainingBounces <= 0) {
+        // Group3 Mod - Environment lighting
+        if (hit.t < 0.0f) {
+            // Simple sky/environment light contribution
+            float t = 0.5f * (segment.ray.direction.y + 1.0f);
+            glm::vec3 skyColor = (1.0f - t) * glm::vec3(1.0f) + t * glm::vec3(0.5f, 0.7f, 1.0f);
+            segment.color *= skyColor * 0.5f;  // Dimmer sky for better contrast
         }
+        segment.remainingBounces = 0;
+        return;
+    }
+    
+    auto rng = makeSeededRandomEngine(iter, idx, depth);
+    thrust::uniform_real_distribution<float> u01(0.0f, 1.0f);
+    
+    Material material = sharedMat[hit.materialId];
+    
+    // Emissive surfaces (lights)
+    if (material.emittance > 0.0f) {
+        segment.color *= material.color * material.emittance;
+        segment.remainingBounces = 0;  // terminate path at light sources
+        return;
+    }
+
+    // Group3 Mod - Russian roulette path termination
+    if (depth > 3) {  // Start Russian Roulette after a few bounces
+        float continueProbability = fmaxf(material.color.x, fmaxf(material.color.y, material.color.z));
+        if (u01(rng) > continueProbability) {
+            segment.remainingBounces = 0;
+            return;
+        }
+        segment.color /= continueProbability;  // Compensate for termination probability
+    }
+
+    glm::vec3 hitPoint = hit.point;
+    glm::vec3 normal = hit.surfaceNormal;
+    glm::vec3 viewDir = -segment.ray.direction;  // Direction toward camera
+    
+    // Group3 Mod - Material-based shading
+    segment.remainingBounces--;
+    
+    // Choose between specular reflection and diffuse based on material properties
+    // Using hasReflective as reflectivity strength and hasRefractive (inverted) as roughness
+    float reflectivity = material.hasReflective;
+    float roughness = 1.0f - material.hasRefractive;
+    
+    if (reflectivity > 0.0f && u01(rng) < reflectivity) {
+        // Specular reflection (mirror-like)
+        glm::vec3 reflectDir = reflect(segment.ray.direction, normal);
+        
+        // Add some roughness/perturbation if needed
+        if (roughness > 0.0f) {
+            glm::vec3 tangent, bitangent;
+            createLocalCoordinateSystem(reflectDir, tangent, bitangent);
+            float angle = roughness * u01(rng) * M_PI * 0.5f;
+            float x = sin(angle) * cos(2.0f * M_PI * u01(rng));
+            float y = cos(angle);
+            float z = sin(angle) * sin(2.0f * M_PI * u01(rng));
+            reflectDir = glm::normalize(tangent * x + reflectDir * y + bitangent * z);
+        }
+        
+        // Set up next ray
+        segment.ray.origin = hitPoint + normal * 0.001f;  // Offset to avoid self-intersection
+        segment.ray.direction = reflectDir;
+        
+        // For pure reflection, maintain color but apply material color tint
+        segment.color *= material.specular.color;  // Use specular color for reflections
     } else {
-        seg.color = glm::vec3(0.0f);
+        // Diffuse reflection (Lambertian)
+        float u1 = u01(rng);
+        float u2 = u01(rng);
+        
+        glm::vec3 diffuseDir = sampleCosineWeightedHemisphere(u1, u2, normal);
+        
+        // Set up next ray
+        segment.ray.origin = hitPoint + normal * 0.001f;
+        segment.ray.direction = diffuseDir;
+        
+        // Apply material color for diffuse reflection
+        segment.color *= material.color;
     }
 }
 
@@ -339,6 +450,10 @@ static Geom*                     dev_geoms      = nullptr;
 static Material*                 dev_materials  = nullptr;
 static PathSegment*              dev_paths      = nullptr;
 static ShadeableIntersection*    dev_intersections = nullptr;
+
+// Group3 Mod - Light positions for direct lighting
+static glm::vec3*                dev_lightPositions = nullptr;
+static int                       h_numLights = 0;
 
 void InitDataContainer(GuiDataContainer* imGuiData) {
     guiData = imGuiData;
@@ -373,6 +488,21 @@ void pathtraceInit(Scene* scene) {
         cudaMemcpy(dev_bvhNodes, h_bvh.data(), h_bvhNodeCount*sizeof(BVHNodeGPU), cudaMemcpyHostToDevice);
     }
 
+    // Group3 Mod - Find light sources for direct lighting
+    std::vector<glm::vec3> lightPositions;
+    for (size_t i = 0; i < scene->geoms.size(); ++i) {
+        if (scene->materials[scene->geoms[i].materialid].emittance > 0.0f) {
+            // Extract center of geometry as light position
+            glm::vec4 center = scene->geoms[i].transform * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+            lightPositions.push_back(glm::vec3(center));
+        }
+    }
+    h_numLights = (int)lightPositions.size();
+    if (h_numLights > 0) {
+        cudaMalloc(&dev_lightPositions, h_numLights * sizeof(glm::vec3));
+        cudaMemcpy(dev_lightPositions, lightPositions.data(), h_numLights * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+    }
+
     // intersections buffer
     cudaMalloc(&dev_intersections, pixelcount*sizeof(ShadeableIntersection));
     cudaMemset(dev_intersections, 0, pixelcount*sizeof(ShadeableIntersection));
@@ -392,6 +522,7 @@ void pathtraceFree() {
     cudaFree(dev_materials);
     cudaFree(dev_intersections);
     cudaFree(dev_bvhNodes);
+    if (dev_lightPositions) cudaFree(dev_lightPositions);  // Group3 Mod
     checkCUDAError("pathtraceFree");
 }
 
@@ -421,7 +552,13 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
     int depth = 0;
     int num_paths = pixelcount;
     bool iterationComplete = false;
-    while (!iterationComplete) {
+
+    // Group3 Mod - Limit the number of path segments by active rays only
+    int* dev_numActiveRays;
+    cudaMalloc(&dev_numActiveRays, sizeof(int));
+    cudaMemcpy(dev_numActiveRays, &pixelcount, sizeof(int), cudaMemcpyHostToDevice);
+
+    while (!iterationComplete && depth < hst_scene->state.traceDepth) {
         cudaMemset(dev_intersections, 0, pixelcount*sizeof(ShadeableIntersection));
         int numBlocks1d = (num_paths + blockSize1d - 1) / blockSize1d;
 
@@ -439,17 +576,17 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
         cudaEventElapsedTime(&intersectTime, startKernel, stopKernel);
         totalK += intersectTime;
         checkCUDAError("trace one bounce");
-        depth++;
 
-        // shading
+        // Group3 Mod - Physically based shading
         cudaEventRecord(startKernel);
         int matCount = (int)hst_scene->materials.size();
         size_t shMemBytes = matCount * sizeof(Material);
-        shadeFakeMaterial<<<numBlocks1d,blockSize1d,shMemBytes>>>(
-            iter, num_paths,
+        shadeAndExtendRays<<<numBlocks1d,blockSize1d,shMemBytes>>>(
+            iter, depth, num_paths,
             dev_intersections,
             dev_paths,
-            dev_materials, matCount
+            dev_materials, matCount,
+            dev_lightPositions, h_numLights
         );
         cudaEventRecord(stopKernel);
         cudaEventSynchronize(stopKernel);
@@ -457,9 +594,15 @@ void pathtrace(uchar4* pbo, int frame, int iter) {
         totalK += shadeTime;
         checkCUDAError("shade");
 
-        iterationComplete = true; // no stream-compaction yet
-        if (guiData) guiData->TracedDepth = depth;
+        depth++;
+        
+        // Group3 Mod - Exit condition based on maximum depth reached
+        if (depth >= hst_scene->state.traceDepth) {
+            iterationComplete = true;
+        }
     }
+    
+    cudaFree(dev_numActiveRays);  // Group3 Mod - Cleanup
 
     // Final gather
     int numBlocksPix = (pixelcount + blockSize1d - 1) / blockSize1d;
