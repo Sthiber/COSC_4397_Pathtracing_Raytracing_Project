@@ -19,6 +19,7 @@ struct Ray {
 
 struct Geom {
     enum GeomType type;
+    int id;
     int materialid;
     glm::vec3 translation;
     glm::vec3 rotation;
@@ -26,6 +27,12 @@ struct Geom {
     glm::mat4 transform;
     glm::mat4 inverseTransform;
     glm::mat4 invTranspose;
+    glm::vec3 points[3];
+    glm::vec3 norms[3];
+    glm::vec3 maxb;
+    glm::vec3 minb;
+    glm::vec3 midpoint;
+    float surface_area;
 };
 
 struct Material {
@@ -34,8 +41,8 @@ struct Material {
         float exponent;
         glm::vec3 color;
     } specular;
-    float hasReflective;
-    float hasRefractive;
+    float hasReflective;  // Group3 Mod - Used as reflectivity strength
+    float hasRefractive;  // Group3 Mod - Used as roughness control (inverted)
     float indexOfRefraction;
     float emittance;
 };
@@ -66,12 +73,11 @@ struct PathSegment {
     int remainingBounces;
 };
 
-// Use with a corresponding PathSegment to do:
-// 1) color contribution computation
-// 2) BSDF evaluation: generate a new ray
 struct ShadeableIntersection {
-  float t;
-  glm::vec3 surfaceNormal;
-  int materialId;
-  glm::vec3 point; // Group3 Mod - Added to store the intersection point
+    float t;
+    glm::vec3 surfaceNormal;
+    int materialId;
+    glm::vec3 point;            // Group3 Mod - Intersection point
+    bool outsideObject;         // Group3 Mod - Whether ray hit from outside
+    int geomIndex;              // Group3 Mod - Index of hit geometry
 };
