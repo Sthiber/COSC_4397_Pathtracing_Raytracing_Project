@@ -52,7 +52,28 @@ In our project, after implementing shared memory and coalesced memory access opt
 The comparison between the naive implementation and the BVH-optimized version shows a clear improvement in overall performance. While the total kernel time remains the same at 0.46 ms, the BVH version reduced the total render time from 2.71 seconds to 2.62 seconds. This small but meaningful improvement comes from faster traversal and intersection calculations, since the BVH helps skip unnecessary geometry checks. The BVH implementation did not alter the PSNR or individual kernel durations significantly, but it eliminated overhead that sets us up for further gains with more complex scenes or additional rays per iteration. This confirms BVH as a foundational optimization for ray tracing acceleration.
 
 ## BVH + Shared Memory + Memory Coalesced
+<p float="left">
+  <img src="img/Best.png" width="48%" />
+  <img src="img/best.png" width="48%" />
+</p>
+By combining Bounding Volume Hierarchy (BVH) with shared memory and memory coalescing, we achieved a notable performance boost in our path tracer. BVH reduces the number of ray-primitive intersections, shared memory lowers access latency during shading, and coalesced memory access improves bandwidth efficiency. Compared to using BVH alone (render time: 2.62s, 243.49 million rays/sec, 500.81 MB GPU memory), the combined method reached a faster render time of 2.46s, a higher throughput of 260.27 million rays/sec, at the cost of increased memory usage (822.50 MB). PSNR remained nearly the same (27.78 dB vs. 27.75 dB), showing image quality was maintained. Overall, this trade-off of memory for speed demonstrates the value of combining multiple CUDA optimization techniques.
 
+## Attempted Optimization: BVH + Material Sort (Unsuccessful)
+We experimented with combining BVH and material sorting in an attempt to improve shading coherence. However, this combination resulted in broken renders, as shown in the image below. The issue stemmed from material sorting disrupting the spatial coherence required for efficient BVH traversal. Rays grouped by material were no longer spatially close, leading to incorrect intersections and incomplete lighting paths. This revealed a potential bottleneck when mixing traversal-heavy optimizations (like BVH) with data-ordering strategies (like material sort). Due to this conflict and the visual artifacts it introduced, we decided to avoid combining BVH with material sorting in our final implementation.
+
+<p float="center">
+  <img src="img/broken.png" width="48%" />
+</p>
+
+## Our Best Image 
+Most of the previous images were low quality, but we were able to produce this image with reflections and shadows. The performance on this was not as great as the previous ones, but it is definitely something we could build off of.
+<p float="center">
+  <img src="img/ball.png" width="48%" />
+</p>
+
+
+## Conclusion
+Through this final project, we applied and reinforced many of the CUDA optimization techniques we learned throughout the semester. By systematically experimenting with shared memory, memory coalescing, and BVH acceleration, we achieved significant improvements in both rendering speed and throughput while maintaining high image quality. We also learned the importance of understanding how different optimizations interact, such as discovering that material sorting can conflict with BVH traversal and introduce performance bottlenecks or visual artifacts. This project gave us hands-on experience in performance tuning, memory management, and GPU programming, and it allowed us to combine our knowledge from previous assignments into a cohesive and optimized path tracer.
 
 
 
